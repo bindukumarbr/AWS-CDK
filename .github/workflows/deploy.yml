@@ -43,7 +43,7 @@ jobs:
       ALARM_EMAIL: ${{ vars.ALARM_EMAIL }}
       WEB_CERTIFICATE_ARN: ${{ vars.WEB_CERTIFICATE_ARN }}
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@v7
       - uses: actions/setup-node@v6
         with:
           node-version-file: .nvmrc
@@ -76,7 +76,7 @@ jobs:
       ALARM_EMAIL: ${{ vars.ALARM_EMAIL }}
       WEB_CERTIFICATE_ARN: ${{ vars.WEB_CERTIFICATE_ARN }}
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@v7
       - uses: actions/setup-node@v6
         with:
           node-version-file: .nvmrc
