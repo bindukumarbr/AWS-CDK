@@ -30,6 +30,11 @@ concurrency:
 jobs:
   ci:
     uses: ./.github/workflows/ci.yml
+    # The called workflow's cdk-diff job needs id-token:write for its OIDC AWS role assumption.
+    # A reusable-workflow call can't grant a nested job more than the caller itself holds here.
+    permissions:
+      id-token: write
+      contents: read
 
   deploy-dev:
     needs: ci
