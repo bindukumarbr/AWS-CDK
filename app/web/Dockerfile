@@ -1,7 +1,7 @@
 # syntax=docker/dockerfile:1
 
 # ---- stage 1: install production dependencies only (reproducible: npm ci uses the lockfile) ----
-FROM node:24-alpine AS deps
+FROM node:25-alpine AS deps
 WORKDIR /app
 COPY package.json package-lock.json ./
 RUN npm ci --omit=dev --ignore-scripts
@@ -11,7 +11,7 @@ RUN npm ci --omit=dev --ignore-scripts
 # attack surface further. Alpine is used here because the container health check needs `node` only,
 # and because the smaller CVE surface than a full Debian image is enough for this scope.
 # In real use pin the base image by digest (FROM node:24-alpine@sha256:...) and let Dependabot bump it.
-FROM node:24-alpine
+FROM node:25-alpine
 ENV NODE_ENV=production
 WORKDIR /app
 
