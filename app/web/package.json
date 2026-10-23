@@ -1,0 +1,9 @@
+{
+  "name": "orders-web",
+  "version": "1.0.0",
+  "private": true,
+  "description": "Minimal Node.js web service for the ECS Fargate tier",
+  "main": "server.js",
+  "engines": { "node": ">=22" },
+  "dependencies": { "pg": "^8.23.1" }
+}

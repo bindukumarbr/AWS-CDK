@@ -1,0 +1,5 @@
+node_modules/
+cdk.out/
+coverage/
+.env
+# Keep cdk.context.json COMMITTED: it pins AZ/VPC lookups so synth is deterministic in CI.

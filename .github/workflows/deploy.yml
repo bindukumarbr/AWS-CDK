@@ -1,0 +1,97 @@
+# CD: merge to main -> CI gates -> deploy dev -> smoke test -> (manual approval) -> deploy prod.
+#
+# Authentication is GitHub OIDC -> AWS (no stored keys). The `environment:` on each deploy job is what the
+# IAM trust policy matches (`sub = repo:ORG/REPO:environment:<name>`), so:
+#   - only these two jobs can assume the deploy role, and
+#   - the `prod` environment is configured in GitHub with REQUIRED REVIEWERS, so a human approves the prod
+#     job before it can even request AWS credentials.
+#
+# Rollback story (be ready to say it):
+#   1. ECS deployment circuit breaker rolls the SERVICE back automatically if new tasks fail health checks.
+#   2. CloudFormation rolls the STACK back automatically if an update fails.
+#   3. For a bad-but-healthy release: revert the commit on main; this pipeline redeploys the previous version
+#      (immutable image hashes mean the old image is still in ECR). Roll-forward is the default; there is no
+#      "undo" button to forget the pipeline.
+name: deploy
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+# Never cancel a deployment mid-flight: a half-applied CloudFormation update is worse than a queued one.
+concurrency:
+  group: deploy
+  cancel-in-progress: false
+
+jobs:
+  ci:
+    uses: ./.github/workflows/ci.yml
+
+  deploy-dev:
+    needs: ci
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    environment: dev
+    permissions:
+      id-token: write
+      contents: read
+    env:
+      ALARM_EMAIL: ${{ vars.ALARM_EMAIL }}
+      WEB_CERTIFICATE_ARN: ${{ vars.WEB_CERTIFICATE_ARN }}
+    steps:
+      - uses: actions/checkout@v6
+      - uses: actions/setup-node@v6
+        with:
+          node-version-file: .nvmrc
+          cache: npm
+      - run: npm ci
+      - uses: aws-actions/configure-aws-credentials@v6
+        with:
+          role-to-assume: ${{ vars.AWS_DEPLOY_ROLE_ARN }}
+          aws-region: ap-south-1
+          role-session-name: gha-deploy-dev-${{ github.run_id }}
+      - name: Deploy dev
+        # `--require-approval never` is safe HERE because the PR already showed the diff and passed every gate,
+        # and `cdk deploy` still refuses to start if cdk-nag/Aspect validation fails at synth.
+        run: npx cdk deploy --all -c stage=dev --require-approval never --outputs-file outputs.json
+      - name: Smoke test (the service must answer through the load balancer)
+        run: |
+          url=$(jq -r '."orders-dev-app".WebUrl' outputs.json)
+          echo "Checking $url/health"
+          curl --fail --silent --show-error --retry 12 --retry-delay 10 --retry-all-errors "$url/health"
+
+  deploy-prod:
+    needs: deploy-dev
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    environment: prod # <- required reviewers configured in GitHub: the manual approval gate
+    permissions:
+      id-token: write
+      contents: read
+    env:
+      ALARM_EMAIL: ${{ vars.ALARM_EMAIL }}
+      WEB_CERTIFICATE_ARN: ${{ vars.WEB_CERTIFICATE_ARN }}
+    steps:
+      - uses: actions/checkout@v6
+      - uses: actions/setup-node@v6
+        with:
+          node-version-file: .nvmrc
+          cache: npm
+      - run: npm ci
+      - uses: aws-actions/configure-aws-credentials@v6
+        with:
+          role-to-assume: ${{ vars.AWS_DEPLOY_ROLE_ARN }}
+          aws-region: ap-south-1
+          role-session-name: gha-deploy-prod-${{ github.run_id }}
+      - name: Show what will change (kept in the job log for the audit trail)
+        run: npx cdk diff --all -c stage=prod
+      - name: Deploy prod
+        run: npx cdk deploy --all -c stage=prod --require-approval never --outputs-file outputs.json
+      - name: Smoke test
+        run: |
+          url=$(jq -r '."orders-prod-app".WebUrl' outputs.json)
+          curl --fail --silent --show-error --retry 12 --retry-delay 10 --retry-all-errors "$url/health"

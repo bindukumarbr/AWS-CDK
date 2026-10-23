@@ -1,0 +1,28 @@
+# Checkov (second, independent IaC scanner; cdk-nag is the first) runs against the SYNTHESIZED CloudFormation
+# in CI. Why two scanners: different rule sets catch different things, and Checkov reads the final template,
+# so it also catches problems introduced by L1 overrides or property escape hatches that CDK-time checks can miss.
+#
+# Policy: a failing check blocks the pipeline UNLESS it is listed here WITH a written reason.
+# An unexplained skip is just a disabled alarm. Review this file in every PR that touches it.
+framework:
+  - cloudformation
+compact: true
+quiet: true
+skip-check:
+  # --- Accepted for this scope (revisit for a regulated/prod-hardened variant) -------------------------------
+  - CKV_AWS_158 # CloudWatch log groups use the default AWS-owned encryption at rest. A per-log-group KMS CMK is the
+                # upgrade path for 21 CFR Part 11 / GDPR workloads (adds ~$1/key/month + a key policy for logs.<region>).
+  - CKV_AWS_149 # Generated DB secret uses the AWS-managed aws/secretsmanager key. CMK adds key-policy overhead; same upgrade path.
+  - CKV_AWS_118 # RDS enhanced monitoring needs an extra IAM role (+ AWS-managed policy). CloudWatch RDS metrics + alarms cover this scope.
+  - CKV_AWS_173 # Lambda env vars hold only the table NAME. No secret ever lives in an env var (secrets: Secrets Manager).
+  - CKV_AWS_157 # RDS Multi-AZ is off in DEV only (cost). It is enforced for prod three ways: cdk-nag AwsSolutions-RDS3 is only
+                # acknowledged when config.db.multiAz is false, and test/foundation-stack.test.ts asserts MultiAZ=true for prod.
+  # --- Not applicable to this design --------------------------------------------------------------------------
+  - CKV_AWS_116 # DLQ applies to ASYNC invocations. This function is invoked synchronously by API Gateway (errors return to the caller).
+  - CKV_AWS_117 # The function touches only DynamoDB (public AWS endpoint + gateway VPC endpoint elsewhere). Putting it in a VPC adds ENI cold-start and NAT cost for no benefit.
+  - CKV_AWS_115 # Reserved concurrency: new accounts can have a total limit as low as 10, where a reservation can make deploys fail. API stage throttling protects DynamoDB instead.
+  - CKV_AWS_18  # The ALB access-log bucket IS the log sink; logging a log sink is circular (same reason as cdk-nag S1).
+  # --- Demo mode only: plain-HTTP listener because there is no domain/ACM certificate ---------------------------
+  - CKV_AWS_2   # Becomes a real gate once WEB_CERTIFICATE_ARN is set (HTTPS listener + redirect). REMOVE these three then.
+  - CKV_AWS_103 # TLS policy is set to RECOMMENDED_TLS when a certificate is provided (asserted in test/app-stack.test.ts).
+  - CKV_AWS_260 # Port 80 must stay open on a public ALB, at minimum for the HTTP->HTTPS redirect.

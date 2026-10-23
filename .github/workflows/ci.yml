@@ -1,0 +1,162 @@
+# CI: every pull request, and re-used by deploy.yml before any deployment.
+#
+# Shift-left security: each job is a different class of problem, so a failure tells you WHAT went wrong.
+#
+#   quality ......... type-check + unit tests (the tests synth the whole app, which runs cdk-nag and the custom Aspect)
+#   sca ............. dependency vulnerabilities (npm audit, both package.json files)
+#   secrets ......... leaked credentials in the repo AND its git history (gitleaks)
+#   sast ............ insecure code patterns in our TypeScript/JS (Semgrep)
+#   iac-scan ........ Checkov on the synthesized CloudFormation (2nd scanner after cdk-nag)
+#   container-scan .. build the image, fail on fixable HIGH/CRITICAL CVEs (Trivy)
+#   cdk-diff ........ PR only: what will change in AWS (read-only role via OIDC)
+#
+# Supply-chain hygiene used throughout:
+#   - `permissions: contents: read` by default; jobs add only what they need.
+#   - No long-lived AWS keys anywhere (OIDC only, see lib/stacks/github-oidc-stack.ts).
+#   - `npm ci` (lockfile-exact), never `npm install`, in CI.
+#   - In a real org: pin every third-party action to a full commit SHA (tags are mutable) and let
+#     Dependabot bump them (.github/dependabot.yml). Major-version tags are used here for readability.
+name: ci
+
+on:
+  pull_request:
+  workflow_call:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true # CI is safe to cancel; deploy.yml is NOT (see there)
+
+env:
+  # Fake account so synth works with NO AWS credentials (PRs from forks have none). Context lookups are not used.
+  CDK_DEFAULT_ACCOUNT: "123456789012"
+
+jobs:
+  quality:
+    name: Type-check and test (incl. cdk-nag)
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v6
+      - uses: actions/setup-node@v6
+        with:
+          node-version-file: .nvmrc
+          cache: npm
+      - run: npm ci
+      - run: npm run build
+      - run: npm test
+
+  sca:
+    name: Dependency vulnerabilities (npm audit)
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v6
+      - uses: actions/setup-node@v6
+        with:
+          node-version-file: .nvmrc
+      # Production dependencies only (devDependencies never ship), fail on HIGH and above.
+      - run: npm audit --omit=dev --audit-level=high
+      - run: npm audit --omit=dev --audit-level=high
+        working-directory: app/web
+
+  secrets:
+    name: Secret scan (gitleaks)
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          fetch-depth: 0 # full history: a secret deleted in a later commit is still leaked
+      # Run the official image directly: no third-party action, no token needed. PIN BY DIGEST in real use.
+      - run: >
+          docker run --rm -v "$PWD:/repo" ghcr.io/gitleaks/gitleaks:latest
+          detect --source /repo --redact --no-banner --exit-code 1
+
+  sast:
+    name: Static analysis (Semgrep)
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v6
+      - uses: actions/setup-python@v6
+        with:
+          python-version: "3.13"
+      - run: pip install semgrep
+      # p/typescript + p/security-audit + p/nodejs: rules for injection, unsafe crypto, SSRF, hard-coded secrets, etc.
+      - run: >
+          semgrep scan --error --metrics=off
+          --config p/typescript --config p/nodejs --config p/security-audit
+          lib bin app/orders-api/src app/web/server.js
+
+  iac-scan:
+    name: IaC scan (Checkov on synthesized templates)
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v6
+      - uses: actions/setup-node@v6
+        with:
+          node-version-file: .nvmrc
+          cache: npm
+      - uses: actions/setup-python@v6
+        with:
+          python-version: "3.13"
+      - run: npm ci
+      - run: pip install checkov
+      # Synthesize BOTH stages straight from the app (no AWS credentials needed), then scan the templates.
+      - name: Synthesize dev, prod and the CI-access (OIDC) app
+        run: |
+          for stage in dev prod; do
+            CDK_OUTDIR="cdk.out/$stage" CDK_CONTEXT_JSON="{\"stage\":\"$stage\"}" npx tsx bin/app.ts
+          done
+          # The OIDC app holds the keys to the account, so it gets scanned too.
+          CDK_OUTDIR="cdk.out/oidc" CDK_CONTEXT_JSON='{"githubOwner":"ci","githubRepo":"ci"}' npx tsx bin/github-oidc.ts
+      # Skips (each with a written reason) live in .checkov.yaml. A new failing check fails the build.
+      - name: Checkov
+        run: |
+          args=""
+          for f in cdk.out/*/*.template.json; do args="$args -f $f"; done
+          checkov --config-file .checkov.yaml $args
+
+  container-scan:
+    name: Container image scan (Trivy)
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v6
+      - name: Build the image exactly as CDK will
+        run: docker build --platform linux/amd64 -t orders-web:ci app/web
+      # --ignore-unfixed: only fail on CVEs that HAVE a fix (otherwise the build is red for things nobody can act on).
+      # Scan the OS packages and the Node dependencies. PIN THE TRIVY IMAGE BY DIGEST in real use.
+      - name: Trivy
+        run: >
+          docker run --rm -v /var/run/docker.sock:/var/run/docker.sock
+          ghcr.io/aquasecurity/trivy:latest image
+          --severity HIGH,CRITICAL --ignore-unfixed --exit-code 1 --no-progress
+          orders-web:ci
+
+  cdk-diff:
+    name: cdk diff (read-only, PR only)
+    if: github.event_name == 'pull_request' && vars.AWS_DIFF_ROLE_ARN != ''
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    permissions:
+      id-token: write # lets the job request the OIDC token. Nothing else gets this permission.
+      contents: read
+    steps:
+      - uses: actions/checkout@v6
+      - uses: actions/setup-node@v6
+        with:
+          node-version-file: .nvmrc
+          cache: npm
+      - run: npm ci
+      - uses: aws-actions/configure-aws-credentials@v6
+        with:
+          role-to-assume: ${{ vars.AWS_DIFF_ROLE_ARN }}
+          aws-region: ap-south-1
+          role-session-name: gha-diff-${{ github.run_id }}
+      # `cdk diff` shows the exact resource and IAM changes for review. Exits non-zero only on error, not on differences.
+      - run: npx cdk diff --all -c stage=dev

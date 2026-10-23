@@ -1,0 +1,18 @@
+# Automated dependency updates = the "SCA, continuously" half of supply-chain security.
+# (The pipeline's `npm audit` is the gate; Dependabot is what keeps the gate from firing in the first place.)
+version: 2
+updates:
+  - package-ecosystem: npm
+    directory: /
+    schedule: { interval: weekly }
+    groups:
+      aws-cdk: { patterns: ["aws-cdk*", "cdk-nag", "constructs"] }
+  - package-ecosystem: npm
+    directory: /app/web
+    schedule: { interval: weekly }
+  - package-ecosystem: docker
+    directory: /app/web
+    schedule: { interval: weekly }
+  - package-ecosystem: github-actions
+    directory: /
+    schedule: { interval: weekly }
