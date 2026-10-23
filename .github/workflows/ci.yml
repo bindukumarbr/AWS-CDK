@@ -131,11 +131,13 @@ jobs:
         run: docker build --platform linux/amd64 -t orders-web:ci app/web
       # --ignore-unfixed: only fail on CVEs that HAVE a fix (otherwise the build is red for things nobody can act on).
       # Scan the OS packages and the Node dependencies. PIN THE TRIVY IMAGE BY DIGEST in real use.
+      # .trivyignore (mounted alongside the socket) holds every accepted exception, each with a written reason.
       - name: Trivy
         run: >
-          docker run --rm -v /var/run/docker.sock:/var/run/docker.sock
+          docker run --rm -v /var/run/docker.sock:/var/run/docker.sock -v "$PWD:/repo"
           ghcr.io/aquasecurity/trivy:latest image
           --severity HIGH,CRITICAL --ignore-unfixed --exit-code 1 --no-progress
+          --ignorefile /repo/.trivyignore
           orders-web:ci
 
   cdk-diff:
