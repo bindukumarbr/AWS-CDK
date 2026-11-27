@@ -17,8 +17,8 @@
     "audit:prod": "npm audit --omit=dev --audit-level=high"
   },
   "dependencies": {
-    "aws-cdk-lib": "^2.273.0",
-    "cdk-nag": "^3.0.2",
+    "aws-cdk-lib": "^2.278.0",
+    "cdk-nag": "^3.1.0",
     "constructs": "^10.8.1"
   },
   "devDependencies": {
@@ -29,7 +29,7 @@
     "@types/aws-lambda": "^8.10.164",
     "@types/jest": "^30.0.0",
     "@types/node": "^24.19.2",
-    "aws-cdk": "^2.1145.0",
+    "aws-cdk": "^2.1149.0",
     "esbuild": "^0.28.2",
     "jest": "^30.5.2",
     "tsx": "^4.23.15",
